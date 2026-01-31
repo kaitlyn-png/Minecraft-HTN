@@ -1,5 +1,34 @@
 import pyhop
 
+# OPERATORS
+	# op_punch_for_wood
+	# op_craft_plank
+	# op_craft_stick
+	# op_craft_bench
+	# op_craft_furnace_at_bench
+	# op_craft_wooden_pickaxe_at_bench
+	# op_craft_stone_pickaxe_at_bench
+	# op_craft_iron_pickaxe_at_bench
+	# op_craft_wooden_axe_at_bench
+	# op_craft_stone_axe_at_bench
+	# op_craft_iron_axe_at_bench
+	# op_craft_cart_at_bench
+	# op_craft_rail_at_bench
+	# op_smelt_ore_in_furnace
+
+# METHODS
+	# op_wooden_axe_for_wood
+	# op_stone_axe_for_wood
+	# op_iron_axe_for_wood
+	# op_wooden_pickaxe_for_cobble
+	# op_stone_pickaxe_for_cobble
+	# op_iron_pickaxe_for_cobble
+	# op_wooden_pickaxe_for_coal
+	# op_stone_pickaxe_for_coal
+	# op_iron_pickaxe_for_coal
+	# op_stone_pickaxe_for_ore
+	# op_iron_pickaxe_for_ore
+
 # iron_axe for wood
 def op_iron_axe_for_wood(state, ID):
 	if state.time[ID] >= 1 and state.iron_axe[ID] >= 1:

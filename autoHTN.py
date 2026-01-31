@@ -32,8 +32,22 @@ def declare_methods(data):
 
 def make_operator(rule):
 	def operator(state, ID):
-		# your code here
-		pass
+		# check time
+		if state.time[ID] < rule['Time']:
+			return False
+		
+		# check inputs
+		for item, qty in rule.get('Consumes', {}).items():
+			if getattr(state, item)[ID] < qty:
+				return False
+			
+		# apply consumes
+		for item, qty in rule.get('Produce', {}).items():
+			if getattr(state, item)[ID] < qty:
+				return False
+		
+		state.time[ID] -= rule['Time']
+		return state
 	return operator
 
 def declare_operators(data):
