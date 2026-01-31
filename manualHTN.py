@@ -20,6 +20,20 @@ def op_craft_wooden_axe_at_bench(state, ID):
 
 # your code here
 
+def op_iron_axe_for_wood(state, ID):
+	if state.time[ID] >= 1 and state.iron_axe[ID] >= 1:
+		state.wood[ID] += 1
+		state.time[ID] -= 1
+		return state
+	return False
+
+# def op_craft_stone_pickaxe_at_bench(state, ID):
+# 	if state.time[ID] >= 1 and state.stone_axe[ID] >= 1:
+# 		state.wood[ID] += 1
+# 		state.time[ID] -= 1
+# 		return state
+# 	return False
+
 pyhop.declare_operators(op_punch_for_wood, op_craft_wooden_axe_at_bench)
 
 '''end operators'''
