@@ -26,8 +26,8 @@ def make_method(name, rule):
 		# simple items first (wood, cobble, coal, ore) --> (plank, stick) --> (ingot, etc.)
 		item_priority = {
 			'wood': 1, 'cobble': 1, 'coal': 1, 'ore': 1,
-			'plank': 2, 'stick': 2,
-			'ingot': 3
+			'plank': 2, 'stick': 2, 'ingot': 2
+			#'ingot': 3
 		}
 		consumables = [(item, qty) for item, qty in rule.get('Consumes', {}).items()]
 		consumables.sort(key=lambda x: item_priority.get(x[0], 4))
@@ -88,7 +88,12 @@ def declare_methods(data):
 		methods = []
 		for name, rule in rules:
 			op_name = f"op_{name}"
-			methods.append(make_method(op_name, rule))
+			method = make_method(op_name, rule)
+			method._requires = rule.get('Requires', {})
+			method._requires_tools = set(rule.get('Requires', {}).keys())
+			method._consumes = set(rule.get('Consumes', {}).keys())
+			method._recipe_name = name
+			methods.append(method)
 
 		pyhop.declare_methods(f'produce_{product}', *methods)
 		#pyhop.print_methods()
@@ -133,20 +138,61 @@ def declare_operators(data):
 	pyhop.declare_operators(*ops)
 
 def add_heuristic(data, ID):
+	goal_tools = {k for k in data.get('Problem', {}).get('Goal', {}) if k in data.get('Tools', [])}
+	iron_tools = {'iron_axe', 'iron_pickaxe'}
+	axe_tools = {'wooden_axe', 'stone_axe', 'iron_axe'}
+	goal_items = data.get('Problem', {}).get('Goal', {})
+	goal_ingot = goal_items.get('ingot', 0)
+
 	def heuristic(state, curr_task, tasks, plan, depth, calling_stack):
 		# Critical: prevent deep recursion
 		if state.time[ID] < 0:
 			return True
 		if depth > 300:  # Increased depth limit significantly for iron_pickaxe
 			return True
+
+		# Prune tool production that isn't part of the goal (axes and iron tools)
+		if curr_task[0].startswith('produce_'):
+			item = curr_task[0][8:]
+			if item in axe_tools and item not in goal_tools:
+				return True
+			if item in iron_tools and item not in goal_tools:
+				return True
+
+		# If goal doesn't require iron tools, avoid building them before ingots exist
+		if curr_task[0].startswith('produce_'):
+			item = curr_task[0][8:]
+			if item in iron_tools and not (goal_tools & iron_tools):
+				if getattr(state, 'ingot', {}).get(ID, 0) < 3:
+					return True
 			
 		# Track repetitive production tasks in calling stack to prevent cycles
 		if curr_task[0].startswith('produce_'):
 			item = curr_task[0][8:]
 			count_in_stack = sum(1 for t in calling_stack if t[0] == curr_task[0])
 			
-			# Allow more repetitions for complex crafting chains (iron pickaxe needs 3 ingots)
-			if count_in_stack >= 5:
+			# Allow more repetitions for bulk materials (e.g., furnace needs 8 cobble)
+			if goal_ingot > 0:
+				max_repeats = {
+					'ore': goal_ingot + 1,
+					'coal': goal_ingot + 1,
+					'cobble': 12,  # 8 furnace + 3 stone pick + buffer
+					'wood': 4,
+					'plank': 12,
+					'stick': 6
+				}.get(item, 5)
+			else:
+				max_repeats = {
+					'cobble': 12,
+					'ore': 12,
+					'coal': 12,
+					'ingot': 12,
+					'wood': 12,
+					'plank': 12,
+					'stick': 12
+				}.get(item, 5)
+			
+			if count_in_stack >= max_repeats:
 				return True
 		
 		return False
@@ -155,9 +201,66 @@ def add_heuristic(data, ID):
 
 
 def define_ordering(data, ID):
-	# Disable method reordering to avoid overhead
+	# Filter methods to reduce cyclic tool dependencies (major source of slowdown)
+	tool_set = set(data.get('Tools', []))
+	raw_materials = {'wood', 'cobble', 'coal', 'ore'}
+	goal_tools = {k for k in data.get('Problem', {}).get('Goal', {}) if k in tool_set}
+	iron_tools = {'iron_axe', 'iron_pickaxe'}
+	goal_items = data.get('Problem', {}).get('Goal', {})
+	goal_ingot = goal_items.get('ingot', 0)
+
 	def reorder_methods(state, curr_task, tasks, plan, depth, calling_stack, methods):
-		return methods
+		if not curr_task[0].startswith('produce_'):
+			return methods
+
+		# Tools currently being produced in this branch
+		tools_in_production = {
+			t[0][8:] for t in calling_stack
+			if t[0].startswith('produce_') and t[0][8:] in tool_set
+		}
+
+		if not tools_in_production:
+			return methods
+
+		filtered = []
+		for m in methods:
+			req_tools = getattr(m, '_requires_tools', set())
+			# Skip methods that depend on a tool we're currently trying to build
+			if req_tools & tools_in_production:
+				continue
+			# If goal doesn't require iron tools, avoid iron tool dependencies before ingots exist
+			if (req_tools & iron_tools) and not (goal_tools & iron_tools):
+				if getattr(state, 'ingot', {}).get(ID, 0) < 3:
+					continue
+			filtered.append(m)
+
+		candidate_methods = filtered or methods
+
+		# For raw materials, prefer the cheapest available tool path to avoid search blowup
+		item = curr_task[0][8:]
+		if goal_ingot > 0:
+			if item == 'wood':
+				candidate_methods = [m for m in candidate_methods if 'punch for wood' in getattr(m, '_recipe_name', '')] or candidate_methods
+			elif item == 'cobble':
+				candidate_methods = [m for m in candidate_methods if 'wooden_pickaxe' in getattr(m, '_requires_tools', set())] or candidate_methods
+			elif item in {'ore', 'coal'}:
+				candidate_methods = [m for m in candidate_methods if 'stone_pickaxe' in getattr(m, '_requires_tools', set())] or candidate_methods
+
+		if item in raw_materials:
+			available = []
+			for m in candidate_methods:
+				req_tools = getattr(m, '_requires_tools', set())
+				if all(getattr(state, t)[ID] >= 1 for t in req_tools):
+					available.append(m)
+			if available:
+				min_rank = min(tool_rank(getattr(m, '_requires', {})) for m in available)
+				available = [m for m in available if tool_rank(getattr(m, '_requires', {})) == min_rank]
+				return available
+			else:
+				min_rank = min(tool_rank(getattr(m, '_requires', {})) for m in candidate_methods)
+				candidate_methods = [m for m in candidate_methods if tool_rank(getattr(m, '_requires', {})) == min_rank]
+
+		return candidate_methods
 	
 	pyhop.define_ordering(reorder_methods)
 
