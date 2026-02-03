@@ -57,10 +57,9 @@ def declare_methods(data):
 			recipes_by_product.setdefault(product, []).append((name, rule))
 
 	for product, rules in recipes_by_product.items():
-		# (key=lambda x: x[1]['Time'])
 		rules.sort(key=lambda x: (
 			tool_rank(x[1].get('Requires')),
-            x[1]['Time']
+			x[1]['Time']
 		))
 
 
@@ -117,19 +116,23 @@ def add_heuristic(data, ID):
 		if state.time[ID] < 0:
 			return True
 
-	 	# prevent recursive production loops
+		if depth > 150:
+			return True
+		
+	 	# prevent recursive production loops, but allow limited recursion for multiple units
 		if curr_task[0].startswith('produce_'):
-			item = curr_task[0][8:]
-
-			for t in calling_stack:
-				if t[0] == curr_task[0]:
+			item = curr_task[0][8:]  # extract item name from 'produce_X'
+			# Count occurrences of this produce task in calling stack
+			count = sum(1 for t in calling_stack if t[0] == curr_task[0])
+			# Items that need multiple copies: allow up to 10 recursions
+			# Items that don't: allow up to 2 recursions
+			if item in ['cobble', 'ore', 'coal', 'ingot']:
+				if count >= 10:
+					return True
+			else:
+				if count >= 2:
 					return True
 		
-		# # block self recursion
-		# if len(calling_stack) > 0:
-		# 	if curr_task == calling_stack[-1]:
-		# 		return True
-			
 		return False
 
 	pyhop.add_check(heuristic)
