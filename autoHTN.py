@@ -19,10 +19,20 @@ def make_method(name, rule):
 	def method(state, ID):
 		tasks = []
 
+		# tools ?
 		for tool in rule.get('Requires', {}):
 			tasks.append(('have_enough', ID, tool, 1))
 
-		for item, qty in rule.get('Consumes', {}).items():
+		# simple items first (wood, cobble, coal, ore) --> (plank, stick) --> (ingot, etc.)
+		item_priority = {
+			'wood': 1, 'cobble': 1, 'coal': 1, 'ore': 1,
+			'plank': 2, 'stick': 2,
+			'ingot': 3
+		}
+		consumables = [(item, qty) for item, qty in rule.get('Consumes', {}).items()]
+		consumables.sort(key=lambda x: item_priority.get(x[0], 4))
+		
+		for item, qty in consumables:
 			tasks.append(('have_enough', ID, item, qty))
 
 		tasks.append((name, ID))
@@ -30,18 +40,22 @@ def make_method(name, rule):
 		return tasks
 	return method
 
-# RANK TOOL
+# RANK TOOL - Lower rank = better (prefer simpler tools)
 
 def tool_rank(req):
     if not req:
-        return 0
-    if 'wooden_pickaxe' in req:
-        return 1
-    if 'stone_pickaxe' in req:
-        return 2
-    if 'iron_pickaxe' in req:
-        return 3
-    return 4
+        return 0  # No tool required
+    if 'bench' in req and len(req) == 1:
+        return 1  # Bench only recipes are simple
+    if 'wooden_axe' in req or 'wooden_pickaxe' in req:
+        return 2  # Wooden tools are quick to make
+    if 'stone_axe' in req or 'stone_pickaxe' in req:
+        return 3  # Stone tools need cobble
+    if 'furnace' in req:
+        return 4  # Furnace is slow
+    if 'iron_axe' in req or 'iron_pickaxe' in req:
+        return 5  # Iron tools are expensive
+    return 10
 
 def declare_methods(data):
 	# some recipes are faster than others for the same product even though they might require extra tools
@@ -57,11 +71,19 @@ def declare_methods(data):
 			recipes_by_product.setdefault(product, []).append((name, rule))
 
 	for product, rules in recipes_by_product.items():
-		rules.sort(key=lambda x: (
-			tool_rank(x[1].get('Requires')),
-			x[1]['Time']
-		))
-
+		if product == 'wood':
+			rules.sort(key=lambda x: (
+				0 if 'punch' in x[0] else 1,  # Punch first
+				tool_rank(x[1].get('Requires')),
+				x[1]['Time'],
+				len(x[1].get('Consumes', {}))
+			))
+		else:
+			rules.sort(key=lambda x: (
+				tool_rank(x[1].get('Requires')),
+				x[1]['Time'],
+				len(x[1].get('Consumes', {}))
+			))
 
 		methods = []
 		for name, rule in rules:
@@ -69,7 +91,6 @@ def declare_methods(data):
 			methods.append(make_method(op_name, rule))
 
 		pyhop.declare_methods(f'produce_{product}', *methods)
-		# debugging
 		#pyhop.print_methods()
 
 def make_operator(rule):
@@ -77,6 +98,10 @@ def make_operator(rule):
 
 		if state.time[ID] < rule['Time']:
 			return False
+
+		for tool, qty in rule.get('Requires', {}).items():
+			if getattr(state, tool)[ID] < qty:
+				return False
 
 		for item, qty in rule.get('Consumes', {}).items():
 			if getattr(state, item)[ID] < qty:
@@ -91,6 +116,7 @@ def make_operator(rule):
 		state.time[ID] -= rule['Time']
 		return state
 
+	operator.__doc__ = f"Produces {rule.get('Produces', {})} consuming {rule.get('Consumes', {})} requiring {rule.get('Requires', {})}"
 	return operator
 
 
@@ -107,39 +133,29 @@ def declare_operators(data):
 	pyhop.declare_operators(*ops)
 
 def add_heuristic(data, ID):
-	# prune search branch if heuristic() returns True
-	# do not change parameters to heuristic(), but can add more heuristic functions with the same parameters: 
-	# e.g. def heuristic2(...); pyhop.add_check(heuristic2)
 	def heuristic(state, curr_task, tasks, plan, depth, calling_stack):
-		
-		# prune impossible time
+		# Critical: prevent deep recursion
 		if state.time[ID] < 0:
 			return True
-
-		if depth > 150:
+		if depth > 300:  # Increased depth limit significantly for iron_pickaxe
 			return True
-		
-	 	# prevent recursive production loops, but allow limited recursion for multiple units
+			
+		# Track repetitive production tasks in calling stack to prevent cycles
 		if curr_task[0].startswith('produce_'):
-			item = curr_task[0][8:]  # extract item name from 'produce_X'
-			# Count occurrences of this produce task in calling stack
-			count = sum(1 for t in calling_stack if t[0] == curr_task[0])
-			# Items that need multiple copies: allow up to 10 recursions
-			# Items that don't: allow up to 2 recursions
-			if item in ['cobble', 'ore', 'coal', 'ingot']:
-				if count >= 10:
-					return True
-			else:
-				if count >= 2:
-					return True
+			item = curr_task[0][8:]
+			count_in_stack = sum(1 for t in calling_stack if t[0] == curr_task[0])
+			
+			# Allow more repetitions for complex crafting chains (iron pickaxe needs 3 ingots)
+			if count_in_stack >= 5:
+				return True
 		
 		return False
 
 	pyhop.add_check(heuristic)
 
+
 def define_ordering(data, ID):
-	# if needed, use the function below to return a different ordering for the methods
-	# note that this should always return the same methods, in a new order, and should not add/remove any new ones
+	# Disable method reordering to avoid overhead
 	def reorder_methods(state, curr_task, tasks, plan, depth, calling_stack, methods):
 		return methods
 	
@@ -172,19 +188,27 @@ def set_up_goals(data, ID):
 
 if __name__ == '__main__':
 	import sys
+	sys.setrecursionlimit(10000)  # Increase recursion limit for deep searches
+	
 	rules_filename = 'crafting.json'
 	if len(sys.argv) > 1:
 		rules_filename = sys.argv[1]
 
+	print(f"Loading {rules_filename}...", flush=True)
 	with open(rules_filename) as f:
 		data = json.load(f)
 
+	print("Setting up state...", flush=True)
 	state = set_up_state(data, 'agent')
 	goals = set_up_goals(data, 'agent')
 
+	print("Declaring operators...", flush=True)
 	declare_operators(data)
+	print("Declaring methods...", flush=True)
 	declare_methods(data)
+	print("Adding heuristic...", flush=True)
 	add_heuristic(data, 'agent')
+	print("Defining ordering...", flush=True)
 	define_ordering(data, 'agent')
 
 	# pyhop.print_operators()
@@ -192,5 +216,30 @@ if __name__ == '__main__':
 
 	# Hint: verbose output can take a long time even if the solution is correct; 
 	# try verbose=1 if it is taking too long
-	pyhop.pyhop(state, goals, verbose=1)
-	# pyhop.pyhop(state, [('have_enough', 'agent', 'cart', 1),('have_enough', 'agent', 'rail', 20)], verbose=3)
+	print("Starting planner...", flush=True)
+	initial_time = data['Problem']['Time']
+	try:
+		result = pyhop.pyhop(state, goals, verbose=0)
+		print("\n=== PLANNING RESULT ===")
+		if result:
+			# Calculate time used from the plan
+			time_used = 0
+			for step in result:
+				# Extract recipe name from operator name (e.g., 'op_punch for wood' -> 'punch for wood')
+				op_name = step[0]
+				if op_name.startswith('op_'):
+					recipe_name = op_name[3:]  # Remove 'op_' prefix
+					if recipe_name in data['Recipes']:
+						time_used += data['Recipes'][recipe_name]['Time']
+			
+			print("SUCCESS: Found a valid plan")
+			print(f"Time used: {time_used} / {initial_time} Minecraft time units")
+			print(f"\nPlan ({len(result)} steps):")
+			for i, step in enumerate(result, 1):
+				print(f"{i}. {step}")
+		else:
+			print("FAILED: No plan found")
+	except RecursionError:
+		print("ERROR: Recursion limit exceeded - search space too large")
+	except KeyboardInterrupt:
+		print("\nInterrupted by user")
